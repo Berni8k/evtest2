@@ -52,17 +52,6 @@ char *events[EV_MAX + 1] = {
   [EV_FF_STATUS] = "ForceFeedbackStatus",
 };
 
-char *property_lookup[INPUT_PROP_MAX + 1] = {
-  [0 ... INPUT_PROP_MAX] = NULL,
-  [INPUT_PROP_POINTER] = "Needs Pointer",
-  [INPUT_PROP_DIRECT] = "Direct input device",
-  [INPUT_PROP_BUTTONPAD] = "Has buttons under pad",
-  [INPUT_PROP_SEMI_MT] = "Touch rectangle only",
-  [INPUT_PROP_TOPBUTTONPAD] = "Sofbuttons on pad",
-  [INPUT_PROP_POINTING_STICK] = "Is pointing stick",
-  [INPUT_PROP_ACCELEROMETER] = "Has accelerometer",
-};
-
 char *keys[KEY_MAX + 1] = {
   [0 ... KEY_MAX] = NULL,
   [KEY_RESERVED] = "Reserved",		[KEY_ESC] = "Esc",
@@ -266,6 +255,10 @@ char *absolutes[ABS_MAX + 1] = {
   [ABS_DISTANCE] = "Distance",	[ABS_TILT_X] = "XTilt",
   [ABS_TILT_Y] = "YTilt",		[ABS_TOOL_WIDTH] = "Tool Width",
   [ABS_VOLUME] = "Volume",	[ABS_MISC] = "Misc",
+  [ABS_MT_POSITION_X] = "MTouchX",
+  [ABS_MT_POSITION_Y] = "MTouchY",
+  [ABS_MT_TRACKING_ID] = "MTouchID",
+  [ABS_MT_SLOT] = "MTouchSlot"
 };
 
 char *misc[MSC_MAX + 1] = {
@@ -303,12 +296,15 @@ char **names[EV_MAX + 1] = {
   [EV_SND] = sounds,			[EV_REP] = repeats,
 };
 
+
 #define BITS_PER_LONG (sizeof(long) * 8)
 #define NBITS(x) ((((x)-1)/BITS_PER_LONG)+1)
 #define OFF(x)  ((x)%BITS_PER_LONG)
 #define BIT(x)  (1UL<<OFF(x))
 #define LONG(x) ((x)/BITS_PER_LONG)
 #define test_bit(bit, array)	((array[LONG(bit)] >> OFF(bit)) & 1)
+#define TEST_BIT(array, bit) ((array[LONG(bit)] >> OFF(bit)) & 1)
+void PrintEvdevInfo(int fd);
 
 int main (int argc, char **argv)
 {
@@ -357,24 +353,16 @@ int main (int argc, char **argv)
   ioctl_identifier_ret = ioctl(fd, EVIOCGUNIQ(sizeof(ioctl_identifier)), ioctl_identifier);
   if(errno)
     sprintf(ioctl_identifier, "ERR %s",  strerror(errno));
-  
-  errno = 0;  
-  ioctl_properties_ret = ioctl(fd, EVIOCGPROP(sizeof(ioctl_properties)), ioctl_properties);
-  if(errno)
-    sprintf(ioctl_properties, "ERR %s",  strerror(errno));
 
-  printf("\nDevice: %s\n", device_name);
+  printf("-----------------------------------------------------------------------------\n");
+  printf("Device: %s\n", device_name);
   printf("Id: 0x%04X,0x%04X,0x%04X,0x%04X\n",id[0],id[1],id[2],id[3]);
   printf("Name: %s\n",name);
   printf("Location: %s\n",ioctl_location);
   printf("Identifier: %s\n",ioctl_identifier);
-  printf("Properties: ");
-  for (i = 0; i < ioctl_properties_ret; i++) 
-  {
-    k = ioctl_properties[i]; 
-    printf("0x%02X(%s)  ",k,property_lookup[k] ? property_lookup[k] : "?");
-  }
-  printf("\n");
+  printf("Properties: \n");
+  PrintEvdevInfo(fd);
+  printf("-----------------------------------------------------------------------------\n");
 
   while (1) {
     rd = read(fd, ev, sizeof(struct input_event) * 64);
@@ -401,4 +389,68 @@ int main (int argc, char **argv)
   
     }
   }
+}
+
+void PrintEvdevInfo(int fd)
+{
+  struct input_absinfo absinfo;
+  unsigned long ev_bits[NBITS(EV_MAX)];
+  unsigned long abs_bits[NBITS(ABS_MAX)];
+  unsigned long rel_bits[NBITS(REL_MAX)];
+  unsigned long key_bits[NBITS(KEY_MAX)];
+  unsigned int i;
+
+
+  ioctl(fd, EVIOCGBIT(0, sizeof(ev_bits)), ev_bits);
+  if (TEST_BIT(ev_bits, EV_ABS)) {
+    ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abs_bits)),
+          abs_bits);
+
+    if (TEST_BIT(abs_bits, ABS_X)) {
+      ioctl(fd, EVIOCGABS(ABS_X), &absinfo);
+      printf("ABS_X min:%d max:%d\n",absinfo.minimum,absinfo.maximum);
+    }
+    if (TEST_BIT(abs_bits, ABS_Y)) {
+      ioctl(fd, EVIOCGABS(ABS_Y), &absinfo);
+      printf("ABS_Y min:%d max:%d\n",absinfo.minimum,absinfo.maximum);
+    }
+                /* We only handle the slotted Protocol B in weston.
+                   Devices with ABS_MT_POSITION_* but not ABS_MT_SLOT
+                   require mtdev for conversion. */
+    if (TEST_BIT(abs_bits, ABS_MT_POSITION_X) &&
+        TEST_BIT(abs_bits, ABS_MT_POSITION_Y)) {
+      ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X),
+            &absinfo);
+      printf("ABS_MT_X min:%d max:%d\n",absinfo.minimum,absinfo.maximum);
+      ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y),
+            &absinfo);
+      printf("ABS_MT_Y min:%d max:%d\n",absinfo.minimum,absinfo.maximum);
+
+      if (TEST_BIT(abs_bits, ABS_MT_SLOT)) {
+        ioctl(fd, EVIOCGABS(ABS_MT_SLOT),
+              &absinfo);
+        printf("ABS_MT_SLOT %d\n",absinfo.value);
+      }
+    }
+  }
+  if (TEST_BIT(ev_bits, EV_REL)) {
+    ioctl(fd, EVIOCGBIT(EV_REL, sizeof(rel_bits)),
+          rel_bits);
+    if (TEST_BIT(rel_bits, REL_X) || TEST_BIT(rel_bits, REL_Y))
+      printf("REL_X  REL_Y\n");
+  }
+  if (TEST_BIT(ev_bits, EV_KEY)) {
+    ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(key_bits)),
+          key_bits);
+    if (TEST_BIT(key_bits, BTN_TOOL_FINGER))
+      printf("BTN_TOOL_FINGER\n");
+    if (TEST_BIT(key_bits, BTN_TOOL_PEN))
+      printf("BTN_TOOL_PEN\n");
+
+    if (TEST_BIT(key_bits, BTN_TOUCH))
+      printf("BTN_TOUCH\n");
+  }
+  if (TEST_BIT(ev_bits, EV_LED))
+    printf("EV_LED\n");
+  return 0;
 }
